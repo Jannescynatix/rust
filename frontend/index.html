@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KI-Text-Detektor</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="container">
+    <h1>KI-Text-Detektor</h1>
+    <p>Geben Sie einen Text ein, um zu erfahren, ob er wahrscheinlich von einem Menschen oder einer KI geschrieben wurde.</p>
+    <textarea id="text-input" placeholder="Geben Sie hier Ihren Text ein..." required></textarea>
+    <button id="analyze-btn">Analysieren</button>
+    <div id="result-container" class="hidden">
+        <p id="result-text"></p>
+        <div class="progress-bar-container">
+            <div class="progress-bar mensch-bar"></div>
+            <div class="progress-bar ki-bar"></div>
+        </div>
+        <div class="probability-labels">
+            <span id="mensch-label"></span>
+            <span id="ki-label"></span>
+        </div>
+    </div>
+</div>
+<script src="script.js"></script>
+</body>
+</html>
