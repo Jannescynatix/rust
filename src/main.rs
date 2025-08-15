@@ -7,37 +7,33 @@ use axum::{
     routing::get,
     Router,
 };
-use tokio::sync::mpsc::{channel, Sender};
+use tokio::sync::{mpsc::{self, Sender}, broadcast};
 use std::sync::Arc;
 use std::time::Instant;
-use axum::http::StatusCode;
 use serde::Deserialize;
 use serde_json::json;
 use tokio_util::task::CancellationToken;
 
 #[tokio::main]
 async fn main() {
-    // Liest den Port von der Render-Umgebungsvariable aus,
-    // oder verwendet 3000 als Standardwert für die lokale Entwicklung.
     let port = std::env::var("PORT").unwrap_or_else(|_| "3000".to_string());
     let addr = format!("0.0.0.0:{}", port);
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     println!("Server läuft auf {}", addr);
 
-    let cancellation = CancellationToken::new();
+    let (cancel_tx, _) = broadcast::channel(1);
+
     let app = Router::new()
         .route("/", get(serve_index))
         .route("/ws", get(websocket_handler))
-        .with_state(Arc::new(AppState {
-            cancellation: cancellation.clone(),
-        }));
+        .with_state(Arc::new(AppState { cancel_tx: cancel_tx.clone() }));
 
     axum::serve(listener, app).await.unwrap();
 }
 
 #[derive(Clone)]
 struct AppState {
-    cancellation: CancellationToken,
+    cancel_tx: broadcast::Sender<()>,
 }
 
 #[derive(Deserialize)]
@@ -57,6 +53,14 @@ async fn websocket_handler(ws: WebSocketUpgrade, State(state): State<Arc<AppStat
 }
 
 async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
+    // Erstelle einen Channel für Fortschritts-Updates
+    let (progress_tx, mut progress_rx) = mpsc::channel::<String>(100);
+
+    // Klonen des Cancel-Senders, um den Abbruch in der Berechnung auszulösen
+    let cancel_tx = state.cancel_tx.clone();
+    let mut cancel_rx = cancel_tx.subscribe();
+
+    // Empfange Nachrichten vom Client
     while let Some(msg) = socket.recv().await {
         let msg = if let Ok(msg) = msg { msg } else { return; };
 
@@ -65,12 +69,12 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
                 match data.r#type.as_str() {
                     "startCalculation" => {
                         if let Some(number) = data.number {
-                            let (tx, mut rx) = channel::<String>(100);
-                            let cancellation_token = state.cancellation.clone();
+                            let worker_progress_tx = progress_tx.clone();
+                            let worker_cancel_rx = cancel_tx.subscribe();
 
                             tokio::spawn(async move {
                                 let start_time = Instant::now();
-                                let (factors, _last_divisor) = find_prime_factors(number, tx.clone(), cancellation_token.clone()).await;
+                                let (factors, _last_divisor) = find_prime_factors(number, worker_progress_tx, worker_cancel_rx).await;
                                 let duration = start_time.elapsed();
                                 let duration_ms = duration.as_millis();
                                 let duration_sec = duration.as_secs_f64();
@@ -82,16 +86,17 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
                                     "durationMs": format!("{:.2}", duration_ms),
                                     "durationSec": format!("{:.2}", duration_sec),
                                 });
-                                let _ = tx.send(response.to_string()).await;
+                                let _ = progress_tx.send(response.to_string()).await;
                             });
 
-                            while let Some(message) = rx.recv().await {
+                            while let Some(message) = progress_rx.recv().await {
                                 let _ = socket.send(Message::Text(message)).await;
                             }
                         }
                     },
                     "cancelCalculation" => {
-                        state.cancellation.cancel();
+                        let _ = cancel_tx.send(());
+                        println!("Calculation cancelled by client.");
                     },
                     _ => {},
                 }
@@ -100,14 +105,14 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
     }
 }
 
-// Eine schnelle, schrittweise Primfaktorzerlegung in Rust
-async fn find_prime_factors(mut n: u64, sender: Sender<String>, cancellation: CancellationToken) -> (Vec<u64>, u64) {
+async fn find_prime_factors(mut n: u64, sender: mpsc::Sender<String>, mut cancellation: broadcast::Receiver<()>) -> (Vec<u64>, u64) {
     let mut factors = vec![];
     let mut d = 2;
     let limit = (n as f64).sqrt() as u64;
 
     while n >= 2 && d <= limit {
-        if cancellation.is_cancelled() {
+        // Prüfe, ob eine Abbruch-Nachricht empfangen wurde
+        if cancellation.try_recv().is_ok() {
             let _ = sender.send(json!({"type": "cancelled", "message": "Berechnung wurde abgebrochen."}).to_string()).await;
             return (factors, d);
         }
@@ -119,7 +124,7 @@ async fn find_prime_factors(mut n: u64, sender: Sender<String>, cancellation: Ca
             d += 1;
         }
 
-        // Sende Fortschritts-Updates nur alle 1000 Iterationen, um Überlastung zu vermeiden
+        // Sende Fortschritts-Updates nur alle 1000 Iterationen
         if d % 1000 == 0 {
             let progress = (d as f64 / limit as f64) * 100.0;
             let _ = sender.send(json!({"type": "progress", "progress": progress.round()}).to_string()).await;

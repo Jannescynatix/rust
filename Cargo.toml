@@ -3,12 +3,8 @@ name = "prime_factor_rust"
 version = "0.1.0"
 edition = "2021"
 
-# Hier werden alle externen Bibliotheken deines Projekts definiert
 [dependencies]
 axum = { version = "0.7.5", features = ["ws"] }
 tokio = { version = "1.38.0", features = ["full"] }
 serde = { version = "1.0.203", features = ["derive"] }
 serde_json = "1.0.117"
-
-# Wichtig: Dieses Feature ("task") ist notwendig für die CancellationToken
-tokio-util = { version = "0.7.11", features = ["task"] }
