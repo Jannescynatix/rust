@@ -8,7 +8,7 @@ use axum::{
     Router,
 };
 use tokio::sync::mpsc::{channel, Sender};
-use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+use std::sync::Arc;
 use std::time::Instant;
 use axum::http::StatusCode;
 use serde::Deserialize;
@@ -17,6 +17,13 @@ use tokio_util::task::CancellationToken;
 
 #[tokio::main]
 async fn main() {
+    // Liest den Port von der Render-Umgebungsvariable aus,
+    // oder verwendet 3000 als Standardwert für die lokale Entwicklung.
+    let port = std::env::var("PORT").unwrap_or_else(|_| "3000".to_string());
+    let addr = format!("0.0.0.0:{}", port);
+    let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+    println!("Server läuft auf {}", addr);
+
     let cancellation = CancellationToken::new();
     let app = Router::new()
         .route("/", get(serve_index))
@@ -25,10 +32,6 @@ async fn main() {
             cancellation: cancellation.clone(),
         }));
 
-    let port = std::env::var("PORT").unwrap_or_else(|_| "3000".to_string());
-    let addr = format!("0.0.0.0:{}", port);
-    let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
-    println!("Server läuft auf {}", addr);
     axum::serve(listener, app).await.unwrap();
 }
 
@@ -67,7 +70,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
 
                             tokio::spawn(async move {
                                 let start_time = Instant::now();
-                                let (factors, last_divisor) = find_prime_factors(number, tx.clone(), cancellation_token.clone()).await;
+                                let (factors, _last_divisor) = find_prime_factors(number, tx.clone(), cancellation_token.clone()).await;
                                 let duration = start_time.elapsed();
                                 let duration_ms = duration.as_millis();
                                 let duration_sec = duration.as_secs_f64();
@@ -114,7 +117,10 @@ async fn find_prime_factors(mut n: u64, sender: Sender<String>, cancellation: Ca
             n /= d;
         } else {
             d += 1;
-            // Sende Fortschritts-Updates
+        }
+
+        // Sende Fortschritts-Updates nur alle 1000 Iterationen, um Überlastung zu vermeiden
+        if d % 1000 == 0 {
             let progress = (d as f64 / limit as f64) * 100.0;
             let _ = sender.send(json!({"type": "progress", "progress": progress.round()}).to_string()).await;
         }
